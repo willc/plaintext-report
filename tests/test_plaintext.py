@@ -426,7 +426,32 @@ class TestRenderHtml:
         s = pt.select(state, {"A": "u"}, 24, 15, NOW)
         out = pt.render_html(s, {"A": "u"}, 24, NOW, ["A"], analytics=False)
         assert "stale, last reached 4h ago" in out
-        assert "Unreachable this run" in out
+        assert "did not respond on the last run" in out
+
+    def test_cached_note_lives_in_the_footer_not_the_header(self):
+        """Up top it reads like an outage banner on a page that is fine."""
+        s = pt.select(state_with("A", [item("cached", "https://ex.com/c", 2)],
+                                 error="HTTP 500"), {"A": "u"}, 24, 15, NOW)
+        out = pt.render_html(s, {"A": "u"}, 24, NOW, ["A"], analytics=False)
+        assert out.index("did not respond") > out.index("<footer>")
+        assert out.index("did not respond") > out.index("</header>")
+
+    def test_no_cached_note_when_everything_worked(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=False)
+        assert "did not respond" not in out
+
+    @pytest.mark.parametrize("names,expected", [
+        (["A"], "A did not respond"),
+        (["A", "B"], "A and B did not respond"),
+        (["A", "B", "C"], "A, B, and C did not respond"),
+    ])
+    def test_cached_note_reads_as_a_sentence(self, names, expected):
+        assert pt.cached_note(names).startswith(expected)
+
+    def test_nav_links_are_bracketed(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=False)
+        assert '[<a class="txt-link" href="index.txt">plain text</a>]' in out
+        assert '[<a href="feed.xml">rss</a>]' in out
 
     def test_empty_page_still_renders(self):
         out = pt.render_html([], {"A": "u"}, 24, NOW, [], analytics=False)

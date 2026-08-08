@@ -643,6 +643,29 @@ def content_security_policy():
     ])
 
 
+def join_names(names):
+    names = sorted(names)
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def cached_note(failed_names):
+    """Phrased as routine housekeeping, not an alarm.
+
+    A feed timing out is normal and the page is still complete, so this
+    belongs in the footer with the other provenance notes rather than up top
+    where it reads like an outage banner.
+    """
+    if not failed_names:
+        return ""
+    listed = html.escape(join_names(failed_names))
+    return (f"{listed} did not respond on the last run, so those headlines "
+            f"come from the most recent successful fetch.")
+
+
 def stale_note(section):
     if not section["stale"]:
         return ""
@@ -751,10 +774,9 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
     add(f'  <p class="sub">{html.escape(TAGLINE)} '
         f'Updated {now.strftime("%A, %B %d, %Y %H:%M UTC")}. '
         f'Everything published in the last {hours}h.</p>')
-    add('  <p class="nav"><a class="txt-link" href="index.txt">plain text</a> <a href="feed.xml">rss</a></p>')
-    if failed_names:
-        listed = html.escape(", ".join(sorted(failed_names)))
-        add(f'  <p class="sub">Unreachable this run, showing cached items: {listed}</p>')
+    add('  <p class="nav">'
+        '[<a class="txt-link" href="index.txt">plain text</a>] '
+        '[<a href="feed.xml">rss</a>]</p>')
     add(render_controls(hours, default_hours))
     add('</header>')
 
@@ -801,6 +823,9 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
         add('  anonymous and cookieless.')
     add('  Want zero scripts at all? Read the')
     add('  <a class="txt-link" href="index.txt">plain-text edition</a>.</p>')
+    note = cached_note(failed_names)
+    if note:
+        add(f'  <p>{note}</p>')
     add('  <p>Inspired by <a href="https://brutalist.report/">brutalist.report</a>,')
     add('  but for infosec news. Proud supporter of the small web.</p>')
     add('</footer>')
