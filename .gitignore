@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+state.json
+feedcheck.json
+*.pem
+*_ci
+*_ci.pub
+scripts/config.local.sh
