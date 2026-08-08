@@ -71,7 +71,20 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          test -n "$SSH_KEY" && test -n "$SSH_HOST" && test -n "$REMOTE_PATH"
+
+          # Check each secret separately and name the missing one. An
+          # `a && b && c` chain does NOT work here: bash's set -e ignores a
+          # failure in any element of an AND list except the last, so an
+          # empty SSH_HOST sails straight through into rsync and fails with
+          # "Could not resolve hostname" instead of saying what is missing.
+          missing=0
+          for name in SSH_KEY SSH_HOST SSH_USER REMOTE_PATH KNOWN_HOSTS; do
+            if [ -z "${!name:-}" ]; then
+              echo "ERROR: repository secret $name is not set" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
 
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
