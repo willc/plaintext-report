@@ -629,6 +629,64 @@ class TestSiteName:
         assert "PLAINTEXT" not in out.replace(pt.SITE_NAME, "")
 
 
+class TestFavicon:
+    def test_ico_is_a_valid_container(self):
+        ico = pt.render_favicon_ico()
+        assert ico[:4] == b"\x00\x00\x01\x00", "ICO header"
+        assert b"\x89PNG\r\n\x1a\n" in ico, "PNG payload"
+
+    def test_ico_declares_its_own_size_and_offset(self):
+        import struct
+        ico = pt.render_favicon_ico(32)
+        width, height = ico[6], ico[7]
+        size, offset = struct.unpack("<II", ico[14:22])
+        assert (width, height) == (32, 32)
+        assert offset == 22, "PNG must start right after header plus one entry"
+        assert len(ico) == offset + size, "declared length must match the file"
+
+    def test_png_payload_decodes(self):
+        """Round-trip through a real decoder, not just a magic-byte check."""
+        import struct
+        import zlib
+        ico = pt.render_favicon_ico(32)
+        png = ico[22:]
+        length = struct.unpack(">I", png[8:12])[0]
+        assert png[12:16] == b"IHDR"
+        w, h, depth, color = struct.unpack(">IIBB", png[16:16 + 10])[:4]
+        assert (w, h, depth, color) == (32, 32, 8, 6), "32x32 8-bit RGBA"
+        idat = png.index(b"IDAT")
+        idat_len = struct.unpack(">I", png[idat - 4:idat])[0]
+        raw = zlib.decompress(png[idat + 4:idat + 4 + idat_len])
+        assert len(raw) == 32 * (1 + 32 * 4), "one filter byte per row"
+
+    def test_icon_is_not_blank(self):
+        import struct
+        import zlib
+        ico = pt.render_favicon_ico(32)
+        png = ico[22:]
+        idat = png.index(b"IDAT")
+        idat_len = struct.unpack(">I", png[idat - 4:idat])[0]
+        raw = zlib.decompress(png[idat + 4:idat + 4 + idat_len])
+        pixels = set()
+        for row in range(32):
+            start = row * (1 + 32 * 4) + 1
+            for col in range(32):
+                pixels.add(tuple(raw[start + col * 4:start + col * 4 + 4]))
+        assert pt.FAVICON_INK in pixels, "no ink drawn"
+        assert pt.FAVICON_PAPER in pixels, "no background"
+
+    def test_svg_has_no_script(self):
+        svg = pt.render_favicon_svg()
+        assert svg.startswith("<svg")
+        assert "<script" not in svg
+        assert svg.count("<rect") == len(pt.FAVICON_BARS) + 1
+
+    def test_html_links_both_icons(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 72, NOW, [], analytics=False)
+        assert 'rel="icon" href="favicon.svg"' in out
+        assert 'rel="alternate icon" href="favicon.ico"' in out
+
+
 class TestCss:
     def test_explicit_theme_overrides_system_in_both_directions(self):
         assert ':root[data-theme="dark"]' in pt.CSS

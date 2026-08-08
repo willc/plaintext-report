@@ -736,6 +736,8 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
     add(f'<title>{html.escape(SITE_NAME)}</title>')
     add(f'<meta name="description" content="{html.escape(TAGLINE, quote=True)} '
         f'An ad-free, tracker-free aggregator of {len(feeds)} security news sources.">')
+    add('<link rel="icon" href="favicon.svg" type="image/svg+xml">')
+    add('<link rel="alternate icon" href="favicon.ico" sizes="32x32">')
     add('<link rel="stylesheet" href="style.css">')
     add(f'<link rel="alternate" type="application/rss+xml" '
         f'title="{html.escape(SITE_NAME, quote=True)}" href="feed.xml">')
@@ -879,6 +881,78 @@ def render_rss(sections, now, site_url, max_items=100):
     )
 
 
+# The mark is three bars: lines of text, shrinking on the last one. It has to
+# survive being drawn at 16 pixels, so there is no lettering and no detail.
+FAVICON_BARS = (
+    # (x, y, width, height) on a 32x32 grid
+    (5, 8, 22, 4),
+    (5, 15, 22, 4),
+    (5, 22, 13, 4),
+)
+FAVICON_INK = (0x11, 0x11, 0x11, 0xFF)
+FAVICON_PAPER = (0xFF, 0xFF, 0xFF, 0xFF)
+
+
+def render_favicon_svg():
+    bars = "\n".join(
+        f'  <rect x="{x}" y="{y}" width="{w}" height="{h}" fill="#111"/>'
+        for x, y, w, h in FAVICON_BARS
+    )
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">\n'
+        '  <rect width="32" height="32" fill="#fff"/>\n'
+        f"{bars}\n"
+        "</svg>\n"
+    )
+
+
+def _png(width, height, pixels):
+    """Minimal RGBA PNG encoder. Avoids a Pillow dependency for one 32px icon."""
+    import struct
+    import zlib
+
+    def chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    raw = b"".join(
+        b"\x00" + pixels[row * width * 4:(row + 1) * width * 4]
+        for row in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def render_favicon_ico(size=32):
+    """PNG-in-ICO. Every browser that still asks for favicon.ico accepts it."""
+    import struct
+
+    scale = size / 32
+    grid = bytearray()
+    for y in range(size):
+        for x in range(size):
+            ink = any(
+                bx * scale <= x < (bx + bw) * scale
+                and by * scale <= y < (by + bh) * scale
+                for bx, by, bw, bh in FAVICON_BARS
+            )
+            grid.extend(FAVICON_INK if ink else FAVICON_PAPER)
+
+    png = _png(size, size, bytes(grid))
+    header = struct.pack("<HHH", 0, 1, 1)
+    entry = struct.pack(
+        "<BBBBHHII",
+        size if size < 256 else 0, size if size < 256 else 0,
+        0, 0, 1, 32, len(png), len(header) + 16,
+    )
+    return header + entry + png
+
+
 def render_robots(site_url):
     return (
         "User-agent: *\n"
@@ -933,6 +1007,8 @@ def render_htaccess(analytics=True):
 <IfModule mod_mime.c>
   AddType text/plain .txt
   AddType application/rss+xml .xml
+  AddType image/svg+xml .svg
+  AddType image/x-icon .ico
 </IfModule>
 
 <IfModule mod_expires.c>
@@ -940,6 +1016,8 @@ def render_htaccess(analytics=True):
   # The page itself is regenerated every 30 minutes; do not let it go stale.
   ExpiresByType text/html "access plus 5 minutes"
   ExpiresByType text/css "access plus 7 days"
+  ExpiresByType image/svg+xml "access plus 30 days"
+  ExpiresByType image/x-icon "access plus 30 days"
   ExpiresByType text/plain "access plus 5 minutes"
   ExpiresByType application/rss+xml "access plus 15 minutes"
 </IfModule>
@@ -1003,6 +1081,8 @@ def main():
         ".htaccess": render_htaccess(analytics),
         "robots.txt": render_robots(args.site_url.rstrip("/")),
         ".well-known/security.txt": render_security_txt(now),
+        "favicon.svg": render_favicon_svg(),
+        "favicon.ico": render_favicon_ico(),
     }
 
     # One plain-text edition per selectable window, so the "plain text" link
@@ -1015,8 +1095,12 @@ def main():
     for filename, content in outputs.items():
         path = os.path.join(args.out_dir, filename)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        if isinstance(content, bytes):
+            with open(path, "wb") as f:
+                f.write(content)
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
 
     total_items = sum(len(s["items"]) for s in page_sections)
     for name in FEEDS:

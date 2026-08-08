@@ -33,4 +33,11 @@ USER_AGENT = "Mozilla/5.0 (compatible; PlaintextReport/1.0; +https://plaintext.r
 #
 #     SOURCE_LIMITS = {"Malwarebytes Labs": 5, "Zero Day Initiative": 5}
 #
-SOURCE_LIMITS = {}
+SOURCE_LIMITS = {
+    # 39 items in a 72h window, roughly 4x the next busiest source. Left
+    # uncapped it takes a quarter of the page on its own.
+    "The Hacker News": 10,
+    # Publishes nothing for days, then dumps a batch of advisories at once.
+    # The cap only bites on those burst days.
+    "Zero Day Initiative": 8,
+}

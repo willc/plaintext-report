@@ -28,6 +28,8 @@ REQUIRED = [
     ".htaccess",
     "robots.txt",
     ".well-known/security.txt",
+    "favicon.svg",
+    "favicon.ico",
 ]
 
 
@@ -130,6 +132,19 @@ def verify(root):
     security = c.read(".well-known/security.txt")
     c.check("Contact:" in security and "Expires:" in security,
             "security.txt is missing required fields")
+
+    # A favicon that is a valid file but not a valid image still 404s in
+    # spirit: the browser just shows nothing. Check the magic bytes.
+    with open(os.path.join(root, "favicon.ico"), "rb") as f:
+        ico = f.read()
+    c.check(ico[:4] == b"\x00\x00\x01\x00", "favicon.ico is not an ICO container")
+    c.check(b"\x89PNG\r\n\x1a\n" in ico[:32], "favicon.ico has no PNG payload")
+    c.check(len(ico) > 100, "favicon.ico is suspiciously small")
+    c.check('rel="icon"' in html, "index.html does not reference the favicon")
+
+    svg = c.read("favicon.svg")
+    c.check(svg.startswith("<svg"), "favicon.svg is not an SVG")
+    c.check("<script" not in svg, "favicon.svg contains a script")
 
     return c
 
