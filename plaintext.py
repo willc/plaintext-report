@@ -662,8 +662,8 @@ def cached_note(failed_names):
     if not failed_names:
         return ""
     listed = html.escape(join_names(failed_names))
-    return (f"{listed} did not respond on the last run, so those headlines "
-            f"come from the most recent successful fetch.")
+    return (f"Status: {listed} did not respond on the last run, so those "
+            f"headlines come from the most recent successful fetch.")
 
 
 def stale_note(section):
@@ -828,6 +828,8 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
         add(f'  <p>{note}</p>')
     add('  <p>Inspired by <a href="https://brutalist.report/">brutalist.report</a>,')
     add('  but for infosec news. Proud supporter of the small web.</p>')
+    add('  <p>An <a href="https://intergalacticrobots.app/">Intergalactic Robots</a>')
+    add('  production.</p>')
     add('</footer>')
 
     if analytics:
@@ -853,6 +855,8 @@ def render_txt(sections, hours, now):
     ]
     lines.append("Inspired by brutalist.report, but for infosec news. "
                  "Proud supporter of the small web.")
+    lines.append("An Intergalactic Robots production. "
+                 "https://intergalacticrobots.app/")
     lines.append("")
 
     for s in sections:

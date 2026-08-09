@@ -441,12 +441,28 @@ class TestRenderHtml:
         assert "did not respond" not in out
 
     @pytest.mark.parametrize("names,expected", [
-        (["A"], "A did not respond"),
-        (["A", "B"], "A and B did not respond"),
-        (["A", "B", "C"], "A, B, and C did not respond"),
+        (["A"], "Status: A did not respond"),
+        (["A", "B"], "Status: A and B did not respond"),
+        (["A", "B", "C"], "Status: A, B, and C did not respond"),
     ])
     def test_cached_note_reads_as_a_sentence(self, names, expected):
         assert pt.cached_note(names).startswith(expected)
+
+    def test_production_credit_is_linked(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=False)
+        assert 'href="https://intergalacticrobots.app/"' in out
+        assert "Intergalactic Robots</a>" in out
+        assert "production." in out
+
+    def test_production_credit_is_last_in_the_footer(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=False)
+        assert out.index("Intergalactic Robots") > out.index("brutalist.report")
+        assert out.index("Intergalactic Robots") < out.index("</footer>")
+
+    def test_production_credit_in_plain_text_too(self, sections):
+        txt = pt.render_txt(sections, 24, NOW)
+        assert "An Intergalactic Robots production." in txt
+        assert "https://intergalacticrobots.app/" in txt
 
     def test_nav_links_are_bracketed(self, sections):
         out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=False)
