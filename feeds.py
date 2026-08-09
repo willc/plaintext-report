@@ -34,6 +34,29 @@ USER_AGENT = "Mozilla/5.0 (compatible; PlaintextReport/1.0; +https://plaintext.r
 #
 #     SOURCE_LIMITS = {"Malwarebytes Labs": 5, "Zero Day Initiative": 5}
 #
+# The /cve page. Deliberately separate from the front page: these publish at
+# roughly a hundred items a day and would bury actual reporting.
+CVE_FEEDS = {
+    "Offensive Sequence": "https://radar.offseq.com/rss.xml",
+    "VulDB": "https://vuldb.com/?rss.recent",
+    "Zero Day Initiative": "https://www.zerodayinitiative.com/rss/published/",
+    "Exploit-DB": "https://www.exploit-db.com/rss.xml",
+}
+
+# These two link to their own interstitial pages rather than to the record.
+# Where the title carries a CVE id, the link is rewritten to cve.org, which
+# keeps the "headlines link straight to the publisher" promise honest and,
+# because both then point at the same URL, lets the existing dedupe collapse
+# the large overlap between them.
+CVE_LINK_REWRITE = frozenset({"Offensive Sequence", "VulDB"})
+
+# ZDI and Exploit-DB publish their own advisories, so their links are already
+# the primary source and only need a modest cap.
+CVE_SOURCE_LIMITS = {
+    "Zero Day Initiative": 15,
+    "Exploit-DB": 15,
+}
+
 SOURCE_LIMITS = {
     # 39 items in a 72h window, roughly 4x the next busiest source. Left
     # uncapped it takes a quarter of the page on its own.

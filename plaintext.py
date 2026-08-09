@@ -27,7 +27,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser
 
-from feeds import FEEDS, SOURCE_LIMITS, USER_AGENT
+from feeds import (CVE_FEEDS, CVE_LINK_REWRITE, CVE_SOURCE_LIMITS,
+                   FEEDS, SOURCE_LIMITS, USER_AGENT)
 
 SOCKET_TIMEOUT = 20
 MAX_WORKERS = 6
@@ -284,7 +285,25 @@ def canonical_link(url):
     return urlunsplit((parts.scheme.lower(), host, path, urlencode(query), ""))
 
 
-def select(state, feeds, hours, limit, now):
+CVE_ID = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+
+
+def authoritative_link(name, title, link, rewrite_names):
+    """Point aggregator entries at the CVE record instead of the aggregator.
+
+    Only applies to sources listed for rewriting, and only when the title
+    actually carries a CVE id. Anything else is left alone rather than
+    guessed at.
+    """
+    if name not in rewrite_names:
+        return link
+    found = CVE_ID.search(title)
+    if not found:
+        return link
+    return f"https://www.cve.org/CVERecord?id={found.group(0).upper()}"
+
+
+def select(state, feeds, hours, limit, now, limits=None, rewrite=frozenset()):
     """Build the display sections. Deduplicates by canonical URL across the
     whole page, first source in roster order wins.
 
@@ -292,6 +311,8 @@ def select(state, feeds, hours, limit, now):
     outlets: two sites covering one story independently is signal, not noise,
     and fuzzy title matching would suppress real coverage.
     """
+    if limits is None:
+        limits = SOURCE_LIMITS
     cutoff = now - dt.timedelta(hours=hours)
     seen = set()
     sections = []
@@ -303,20 +324,20 @@ def select(state, feeds, hours, limit, now):
             ts = parse_ts(item.get("ts"))
             if ts is not None and ts < cutoff:
                 continue
-            key = canonical_link(item["link"])
+            # Also cleaned here, not just at ingest, so items already sitting
+            # in the cache pick up the fix without waiting to be refetched.
+            title = clean_title(item["title"])
+            # Rewrite before deduping, so two aggregators pointing at the same
+            # CVE collapse into one entry.
+            link = authoritative_link(name, title, item["link"], rewrite)
+            key = canonical_link(link)
             if key in seen:
                 continue
             seen.add(key)
-            # Also cleaned here, not just at ingest, so items already sitting
-            # in the cache pick up the fix without waiting to be refetched.
-            fresh.append({
-                "title": clean_title(item["title"]),
-                "link": item["link"],
-                "ts": ts,
-            })
+            fresh.append({"title": title, "link": link, "ts": ts})
 
         fresh.sort(key=lambda i: i["ts"] or now, reverse=True)
-        fresh = fresh[:min(limit, SOURCE_LIMITS.get(name, limit))]
+        fresh = fresh[:min(limit, limits.get(name, limit))]
         if not fresh:
             continue
 
@@ -554,10 +575,13 @@ PREFS_JS_TEMPLATE = """/* PLAINTEXT reader preferences. No cookies, no network, 
      does not silently drop sources. */
   function applyTxtLinks() {
     var hours = get('hours');
+    /* Which family of plain-text files this page owns: index.txt on the
+       front page, cve.txt on /cve. */
+    var base = (document.body && document.body.getAttribute('data-txt')) || 'index';
     var href;
-    if (hours === 'all') { href = 'index-all.txt'; }
-    else if (hours === DEFAULTS.hours) { href = 'index.txt'; }
-    else { href = 'index-' + hours + 'h.txt'; }
+    if (hours === 'all') { href = base + '-all.txt'; }
+    else if (hours === DEFAULTS.hours) { href = base + '.txt'; }
+    else { href = base + '-' + hours + 'h.txt'; }
     var links = document.getElementsByClassName('txt-link');
     for (var i = 0; i < links.length; i++) {
       links[i].setAttribute('href', href);
@@ -675,6 +699,25 @@ def stale_note(section):
     return f"stale, last reached {int(h)}h ago" if h >= 1 else "stale"
 
 
+PAGE_INDEX = {
+    "slug": "index",
+    "heading": SITE_NAME,
+    "blurb": TAGLINE,
+    "rss": "feed.xml",
+    "other": ("cve", "cve.html"),
+}
+
+PAGE_CVE = {
+    "slug": "cve",
+    "heading": SITE_NAME + " / CVE",
+    "blurb": ("Newly published vulnerabilities and exploits. "
+              "High volume by nature, which is why it lives here and not on "
+              "the front page."),
+    "rss": "cve.xml",
+    "other": ("headlines", "index.html"),
+}
+
+
 def window_choices(max_hours, default_hours=24):
     """Windows a reader may pick, never wider than what was actually rendered.
     The default is always offered, so a reader can get back to it."""
@@ -693,15 +736,15 @@ def render_prefs_js(default_hours, default_limit):
             .replace("__LIMIT__", str(default_limit)))
 
 
-def txt_filename(hours, default_hours):
+def txt_filename(hours, default_hours, base="index"):
     """Per-window plain-text files, so widening the window on the page and
     then clicking through does not drop sources. The default window keeps the
-    plain `index.txt` name, since that is what no-JS readers land on."""
+    plain `<base>.txt` name, since that is what no-JS readers land on."""
     if hours == "all":
-        return "index-all.txt"
+        return f"{base}-all.txt"
     if int(hours) == int(default_hours):
-        return "index.txt"
-    return f"index-{hours}h.txt"
+        return f"{base}.txt"
+    return f"{base}-{hours}h.txt"
 
 
 def render_controls(max_hours, default_hours=24):
@@ -740,7 +783,7 @@ def render_controls(max_hours, default_hours=24):
 
 
 def render_html(sections, feeds, hours, now, failed_names, analytics=True,
-                default_hours=24):
+                default_hours=24, page=None):
     """Emit indented, one-element-per-line HTML.
 
     The whole pitch of this site is that there is nothing hiding in it, so
@@ -748,6 +791,12 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
     scripts, one headline per line. The CSS lives in style.css so the markup
     a reader sees is content and nothing else.
     """
+    page = page or PAGE_INDEX
+    slug = page["slug"]
+    heading = page["heading"]
+    blurb = page["blurb"]
+    other_label, other_href = page["other"]
+
     out = []
     add = out.append
 
@@ -756,27 +805,32 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
     add('<head>')
     add('<meta charset="utf-8">')
     add('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    add(f'<title>{html.escape(SITE_NAME)}</title>')
-    add(f'<meta name="description" content="{html.escape(TAGLINE, quote=True)} '
-        f'An ad-free, tracker-free aggregator of {len(feeds)} security news sources.">')
+    add(f'<title>{html.escape(heading)}</title>')
+    add(f'<meta name="description" content="{html.escape(blurb, quote=True)} '
+        f'An ad-free, tracker-free aggregator of {len(feeds)} sources.">')
     add('<link rel="icon" href="favicon.svg" type="image/svg+xml">')
     add('<link rel="alternate icon" href="favicon.ico" sizes="32x32">')
     add('<link rel="stylesheet" href="style.css">')
     add(f'<link rel="alternate" type="application/rss+xml" '
-        f'title="{html.escape(SITE_NAME, quote=True)}" href="feed.xml">')
+        f'title="{html.escape(heading, quote=True)}" '
+        f'href="{html.escape(page["rss"], quote=True)}">')
     add('<script src="prefs.js"></script>')
     add('</head>')
     add('')
-    add('<body>')
+    # data-txt tells prefs.js which family of plain-text files this page has,
+    # so the "plain text" link follows the reader's window on both pages.
+    add(f'<body data-txt="{html.escape(slug, quote=True)}">')
     add('')
     add('<header>')
-    add(f'  <h1>{html.escape(SITE_NAME)}</h1>')
-    add(f'  <p class="sub">{html.escape(TAGLINE)} '
+    add(f'  <h1>{html.escape(heading)}</h1>')
+    add(f'  <p class="sub">{html.escape(blurb)} '
         f'Updated {now.strftime("%A, %B %d, %Y %H:%M UTC")}. '
         f'Everything published in the last {hours}h.</p>')
     add('  <p class="nav">'
-        '[<a class="txt-link" href="index.txt">plain text</a>] '
-        '[<a href="feed.xml">rss</a>]</p>')
+        f'[<a class="txt-link" href="{slug}.txt">plain text</a>] '
+        f'[<a href="{html.escape(page["rss"], quote=True)}">rss</a>] '
+        f'[<a href="{html.escape(other_href, quote=True)}">'
+        f'{html.escape(other_label)}</a>]</p>')
     add(render_controls(hours, default_hours))
     add('</header>')
 
@@ -822,7 +876,7 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
         add('  Visit counts come from a self-hosted Plausible instance and are')
         add('  anonymous and cookieless.')
     add('  Want zero scripts at all? Read the')
-    add('  <a class="txt-link" href="index.txt">plain-text edition</a>.</p>')
+    add(f'  <a class="txt-link" href="{slug}.txt">plain-text edition</a>.</p>')
     note = cached_note(failed_names)
     if note:
         add(f'  <p>{note}</p>')
@@ -845,11 +899,12 @@ def render_html(sections, feeds, hours, now, failed_names, analytics=True,
     return "\n".join(out) + "\n"
 
 
-def render_txt(sections, hours, now):
+def render_txt(sections, hours, now, page=None):
+    page = page or PAGE_INDEX
     window = "everything cached" if hours == "all" else f"the last {hours}h"
     lines = [
-        SITE_NAME,
-        TAGLINE,
+        page["heading"],
+        page["blurb"],
         f"Updated {now.strftime('%Y-%m-%d %H:%M UTC')}. Showing {window}.",
         "",
     ]
@@ -872,7 +927,8 @@ def render_txt(sections, hours, now):
     return "\n".join(lines) + "\n"
 
 
-def render_rss(sections, now, site_url, max_items=100):
+def render_rss(sections, now, site_url, max_items=100, page=None):
+    page = page or PAGE_INDEX
     flat = []
     for s in sections:
         for item in s["items"]:
@@ -891,7 +947,7 @@ def render_rss(sections, now, site_url, max_items=100):
             f"<title>{html.escape(title)}</title>"
             f"<link>{html.escape(item['link'], quote=True)}</link>"
             f"<guid isPermaLink=\"true\">{html.escape(item['link'], quote=True)}</guid>"
-            f"<source url=\"{html.escape(site_url, quote=True)}/feed.xml\">"
+            f"<source url=\"{html.escape(site_url, quote=True)}/{page['rss']}\">"
             f"{html.escape(source)}</source>"
             f"{pub}"
             "</item>"
@@ -900,9 +956,9 @@ def render_rss(sections, now, site_url, max_items=100):
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<rss version="2.0"><channel>'
-        f"<title>{html.escape(SITE_NAME)}</title>"
+        f"<title>{html.escape(page['heading'])}</title>"
         f"<link>{html.escape(site_url, quote=True)}/</link>"
-        f"<description>{html.escape(TAGLINE)}</description>"
+        f"<description>{html.escape(page['blurb'])}</description>"
         "<language>en</language>"
         f"<lastBuildDate>{format_datetime(now)}</lastBuildDate>"
         + "".join(entries)
@@ -1033,6 +1089,13 @@ def render_htaccess(analytics=True):
   Header always set Cross-Origin-Opener-Policy "same-origin"
 </IfModule>
 
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # /cve reads better than /cve.html, but the pages link to each other by
+  # filename so they also work when opened straight off disk.
+  RewriteRule ^cve/?$ cve.html [L]
+</IfModule>
+
 <IfModule mod_mime.c>
   AddType text/plain .txt
   AddType application/rss+xml .xml
@@ -1086,41 +1149,61 @@ def main():
     socket.setdefaulttimeout(SOCKET_TIMEOUT)
     now = dt.datetime.now(dt.timezone.utc)
 
-    state = load_state(args.state)
-    results = {} if args.offline else fetch_all(FEEDS, state)
-    if args.offline:
-        results = {name: {"status": "unchanged"} for name in FEEDS}
+    # Both pages share one state file and one fetch pass. The rosters overlap
+    # (ZDI appears on both), so fetching per page would double-request it.
+    all_feeds = dict(FEEDS)
+    all_feeds.update(CVE_FEEDS)
 
-    report = apply_results(state, results, FEEDS, now)
+    state = load_state(args.state)
+    results = {} if args.offline else fetch_all(all_feeds, state)
+    if args.offline:
+        results = {name: {"status": "unchanged"} for name in all_feeds}
+
+    report = apply_results(state, results, all_feeds, now)
     save_state(args.state, state)
 
-    page_sections = select(state, FEEDS, args.max_hours, args.max_limit, now)
-    failed = [n for n, r in report.items() if r["status"] == "failed"]
-
-    os.makedirs(args.out_dir, exist_ok=True)
+    site = args.site_url.rstrip("/")
     analytics = not args.no_analytics
+    os.makedirs(args.out_dir, exist_ok=True)
+
     outputs = {
-        "index.html": render_html(page_sections, FEEDS, args.max_hours, now,
-                                  failed, analytics, args.hours),
-        # RSS is deliberately generous: readers dedupe by guid, and a narrow
-        # window means a subscriber who misses a poll loses those items.
-        "feed.xml": render_rss(page_sections, now, args.site_url.rstrip("/")),
         "style.css": CSS.lstrip(),
         "prefs.js": render_prefs_js(args.hours, args.limit),
         ".htaccess": render_htaccess(analytics),
-        "robots.txt": render_robots(args.site_url.rstrip("/")),
+        "robots.txt": render_robots(site),
         ".well-known/security.txt": render_security_txt(now),
         "favicon.svg": render_favicon_svg(),
         "favicon.ico": render_favicon_ico(),
     }
 
-    # One plain-text edition per selectable window, so the "plain text" link
-    # always matches what the reader is looking at.
-    for choice in window_choices(args.max_hours, args.hours) + ["all"]:
-        window = args.max_hours if choice == "all" else choice
-        txt_sections = select(state, FEEDS, window, args.max_limit, now)
-        outputs[txt_filename(choice, args.hours)] = render_txt(
-            txt_sections, "all" if choice == "all" else window, now)
+    built = {}
+    for page, feeds, limits, rewrite in (
+        (PAGE_INDEX, FEEDS, SOURCE_LIMITS, frozenset()),
+        (PAGE_CVE, CVE_FEEDS, CVE_SOURCE_LIMITS, CVE_LINK_REWRITE),
+    ):
+        slug = page["slug"]
+        sections = select(state, feeds, args.max_hours, args.max_limit, now,
+                          limits, rewrite)
+        failed = [n for n in feeds if report[n]["status"] == "failed"]
+
+        outputs[f"{slug}.html"] = render_html(
+            sections, feeds, args.max_hours, now, failed, analytics,
+            args.hours, page)
+        # RSS is deliberately generous: readers dedupe by guid, and a narrow
+        # window means a subscriber who misses a poll loses those items.
+        outputs[page["rss"]] = render_rss(sections, now, site, page=page)
+
+        # One plain-text edition per selectable window, so the "plain text"
+        # link always matches what the reader is looking at.
+        for choice in window_choices(args.max_hours, args.hours) + ["all"]:
+            window = args.max_hours if choice == "all" else choice
+            txt_sections = select(state, feeds, window, args.max_limit, now,
+                                  limits, rewrite)
+            outputs[txt_filename(choice, args.hours, slug)] = render_txt(
+                txt_sections, "all" if choice == "all" else window, now, page)
+
+        built[slug] = sections
+
     for filename, content in outputs.items():
         path = os.path.join(args.out_dir, filename)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1131,30 +1214,33 @@ def main():
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-    total_items = sum(len(s["items"]) for s in page_sections)
-    for name in FEEDS:
+    for name in all_feeds:
         r = report[name]
         flag = {"fresh": "ok", "unchanged": "304", "failed": "FAIL"}[r["status"]]
         detail = f"  {r['error']}" if r["error"] else ""
         print(f"{flag:5} {name:24.24} cached={r['cached']:3}{detail}", file=sys.stderr)
-    txt_files = sorted(f for f in outputs
-                       if f.startswith("index") and f.endswith(".txt"))
+
+    all_failed = [n for n, r in report.items() if r["status"] == "failed"]
     print(
-        f"\npage: {len(page_sections)}/{len(FEEDS)} sections, {total_items} items "
-        f"(carries up to {args.max_hours}h and {args.max_limit} per source; "
-        f"defaults to {args.hours}h and {args.limit})\n"
-        f"plain text: {', '.join(txt_files)}\n"
-        f"{len(failed)} feeds failed -> {args.out_dir}/",
+        f"\ncarrying up to {args.max_hours}h and {args.max_limit} per source; "
+        f"page defaults to {args.hours}h and {args.limit}",
         file=sys.stderr,
     )
+    for slug, sections in built.items():
+        items = sum(len(s["items"]) for s in sections)
+        roster = FEEDS if slug == "index" else CVE_FEEDS
+        print(f"  {slug + '.html':<12} {len(sections)}/{len(roster)} sections, "
+              f"{items} items", file=sys.stderr)
+    print(f"{len(all_failed)} feeds failed -> {args.out_dir}/", file=sys.stderr)
 
-    if len(failed) > args.max_failures:
-        print(f"ERROR: {len(failed)} feeds failed (limit {args.max_failures})",
-              file=sys.stderr)
+    if len(all_failed) > args.max_failures:
+        print(f"ERROR: {len(all_failed)} feeds failed "
+              f"(limit {args.max_failures})", file=sys.stderr)
         return 1
-    if not page_sections:
-        print("ERROR: no sections rendered", file=sys.stderr)
-        return 1
+    for slug, sections in built.items():
+        if not sections:
+            print(f"ERROR: {slug}.html rendered no sections", file=sys.stderr)
+            return 1
     return 0
 
 

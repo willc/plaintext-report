@@ -578,7 +578,7 @@ class TestControls:
     def test_prefs_script_loads_before_body(self, sections):
         """Theme has to be set before first paint or the page flashes."""
         out = pt.render_html(sections, {"A": "u"}, 72, NOW, [], analytics=False)
-        assert out.index('src="prefs.js"') < out.index("<body>")
+        assert out.index('src="prefs.js"') < out.index("<body")
 
     def test_prefs_js_stores_nothing_off_device(self):
         js = pt.render_prefs_js(24, 15)
@@ -726,6 +726,97 @@ class TestFavicon:
         out = pt.render_html(sections, {"A": "u"}, 72, NOW, [], analytics=False)
         assert 'rel="icon" href="favicon.svg"' in out
         assert 'rel="alternate icon" href="favicon.ico"' in out
+
+
+class TestCvePage:
+    def test_cve_ids_rewrite_to_the_authoritative_record(self):
+        link = pt.authoritative_link(
+            "VulDB", "CVE-2026-55814 | Apache Ranger missing authentication",
+            "https://vuldb.com/vuln/387269", {"VulDB"})
+        assert link == "https://www.cve.org/CVERecord?id=CVE-2026-55814"
+
+    def test_rewrite_only_applies_to_listed_sources(self):
+        original = "https://example.com/x"
+        assert pt.authoritative_link(
+            "Krebs on Security", "CVE-2026-55814 something", original,
+            {"VulDB"}) == original
+
+    def test_entries_without_a_cve_id_keep_their_link(self):
+        """Maltrail IOC dumps carry no CVE, and must not be guessed at."""
+        original = "https://radar.offseq.com/threat/maltrail-ioc"
+        assert pt.authoritative_link(
+            "Offensive Sequence", "Maltrail IOC for 2026-08-09", original,
+            {"Offensive Sequence"}) == original
+
+    def test_rewriting_lets_dedupe_collapse_two_aggregators(self):
+        """The real payoff: both firehoses covering one CVE become one row."""
+        feeds = {"Offensive Sequence": "u", "VulDB": "u"}
+        state = {"feeds": {
+            "Offensive Sequence": {
+                "items": [item("CVE-2026-19353: File Inclusion in DedeCMS",
+                               "https://radar.offseq.com/threat/abc", 1)],
+                "last_success": NOW.isoformat()},
+            "VulDB": {
+                "items": [item("CVE-2026-19353 | DedeCMS file inclusion",
+                               "https://vuldb.com/vuln/999", 1)],
+                "last_success": NOW.isoformat()},
+        }}
+        sections = pt.select(state, feeds, 24, 25, NOW,
+                             rewrite=pt.CVE_LINK_REWRITE)
+        assert [s["name"] for s in sections] == ["Offensive Sequence"]
+
+    def test_without_rewriting_they_would_both_survive(self):
+        """Guards the test above against passing for the wrong reason."""
+        feeds = {"Offensive Sequence": "u", "VulDB": "u"}
+        state = {"feeds": {
+            "Offensive Sequence": {
+                "items": [item("CVE-2026-19353: x", "https://radar.offseq.com/a", 1)],
+                "last_success": NOW.isoformat()},
+            "VulDB": {
+                "items": [item("CVE-2026-19353 | x", "https://vuldb.com/vuln/999", 1)],
+                "last_success": NOW.isoformat()},
+        }}
+        assert len(pt.select(state, feeds, 24, 25, NOW)) == 2
+
+    def test_page_declares_its_own_plain_text_family(self, sections):
+        out = pt.render_html(sections, {"A": "u"}, 72, NOW, [],
+                             analytics=False, page=pt.PAGE_CVE)
+        assert 'data-txt="cve"' in out
+        assert 'href="cve.txt"' in out
+        assert 'href="cve.xml"' in out
+
+    def test_pages_link_to_each_other(self, sections):
+        index = pt.render_html(sections, {"A": "u"}, 72, NOW, [], analytics=False)
+        cve = pt.render_html(sections, {"A": "u"}, 72, NOW, [],
+                             analytics=False, page=pt.PAGE_CVE)
+        assert 'href="cve.html"' in index
+        assert 'href="index.html"' in cve
+
+    def test_txt_filenames_are_namespaced_per_page(self):
+        assert pt.txt_filename(24, 24, "cve") == "cve.txt"
+        assert pt.txt_filename(72, 24, "cve") == "cve-72h.txt"
+        assert pt.txt_filename("all", 24, "cve") == "cve-all.txt"
+
+    def test_cve_rss_carries_its_own_identity(self, sections):
+        xml = pt.render_rss(sections, NOW, "https://plaintext.report",
+                            page=pt.PAGE_CVE)
+        root = ET.fromstring(xml)
+        assert root.find("./channel/title").text == pt.PAGE_CVE["heading"]
+
+    def test_htaccess_maps_the_pretty_url(self):
+        assert "RewriteRule ^cve/?$ cve.html" in pt.render_htaccess()
+
+    def test_each_page_applies_its_own_limits(self):
+        """Zero Day Initiative is on both pages and capped differently on
+        each: 8 where it competes with reporting, 15 where it belongs."""
+        items = [item(f"h{i}", f"https://ex.com/{i}", i) for i in range(20)]
+        state = state_with("Zero Day Initiative", items)
+        front = pt.select(state, {"Zero Day Initiative": "u"}, 72, 25, NOW)
+        cve = pt.select(state, {"Zero Day Initiative": "u"}, 72, 25, NOW,
+                        pt.CVE_SOURCE_LIMITS)
+        assert len(front[0]["items"]) == pt.SOURCE_LIMITS["Zero Day Initiative"]
+        assert len(cve[0]["items"]) == pt.CVE_SOURCE_LIMITS["Zero Day Initiative"]
+        assert len(front[0]["items"]) != len(cve[0]["items"])
 
 
 class TestCss:
