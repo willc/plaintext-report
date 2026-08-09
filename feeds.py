@@ -10,6 +10,7 @@ FEEDS = {
     "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
     "Dark Reading": "https://www.darkreading.com/rss.xml",
     "The Record": "https://therecord.media/feed",
+    "CyberScoop": "https://cyberscoop.com/feed/",
     "SANS ISC": "https://isc.sans.edu/rssfeed_full.xml",
     "Schneier on Security": "https://www.schneier.com/feed/atom/",
     "Troy Hunt": "https://www.troyhunt.com/rss/",
