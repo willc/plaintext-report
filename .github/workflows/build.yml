@@ -1,24 +1,21 @@
-name: build and deploy
+name: tests
+
+# CI only. The site is built and published by cron on the web host itself
+# (scripts/dreamhost-build.sh), because DreamHost's firewall intermittently
+# drops SSH from GitHub's datacenter IPs and CISA answers them with a 403.
+# This workflow's job is to catch a broken build before it reaches the host.
 
 on:
-  schedule:
-    # Every 30 minutes. GitHub's scheduler drifts under load, so treat this as
-    # "roughly every 30 to 60 minutes" rather than a guarantee.
-    - cron: '*/30 * * * *'
   workflow_dispatch:
   push:
     branches: [main]
-
-# Never let two builds race each other onto the server.
-concurrency:
-  group: deploy
-  cancel-in-progress: false
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -35,105 +32,11 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      # The feed cache is what makes a failed fetch degrade to "stale" instead
-      # of deleting a source from the page. Losing it is survivable, so a cache
-      # miss is not an error, but keeping it across runs matters.
-      - name: Restore feed cache
-        uses: actions/cache/restore@v4
-        with:
-          path: state.json
-          key: feed-state-${{ github.run_id }}
-          restore-keys: feed-state-
-
+      # A smoke build against live feeds. There is no cached state here, so
+      # this also proves a cold start works, which is the one path the host
+      # never exercises once its state file exists.
       - name: Build
         run: python plaintext.py --out-dir dist
 
-      # Nothing is uploaded until the built tree passes. A build that exits 0
-      # is not the same thing as a build that produced a usable site.
       - name: Verify build
         run: python verify.py dist
-
-      - name: Save feed cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state.json
-          key: feed-state-${{ github.run_id }}
-
-      - name: Deploy
-        # Skip on pull requests and forks, which have no access to secrets.
-        if: github.event_name != 'pull_request'
-        env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          REMOTE_PATH: ${{ secrets.REMOTE_PATH }}
-          KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-
-          # Check each secret separately and name the missing one. An
-          # `a && b && c` chain does NOT work here: bash's set -e ignores a
-          # failure in any element of an AND list except the last, so an
-          # empty SSH_HOST sails straight through into rsync and fails with
-          # "Could not resolve hostname" instead of saying what is missing.
-          missing=0
-          for name in SSH_KEY SSH_HOST SSH_USER REMOTE_PATH KNOWN_HOSTS; do
-            if [ -z "${!name:-}" ]; then
-              echo "ERROR: repository secret $name is not set" >&2
-              missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] || exit 1
-
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          # Pinned host key, not StrictHostKeyChecking=no. Accepting whatever
-          # answers on port 22 would make this trivially interceptable.
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-          # Shared hosting drops connections from runners often enough to be
-          # noise: about one run in eight timed out on SSH. The build is
-          # already verified by this point, so retrying costs nothing and a
-          # single flaky connection should not page anyone.
-          #
-          # ConnectTimeout keeps a dead attempt from burning two minutes
-          # before we can retry it. .dh-diag is DreamHost's own symlink into
-          # /dh/web/diag, excluded so --delete does not sweep it up.
-          ssh_opts="-i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts"
-          ssh_opts="$ssh_opts -o ConnectTimeout=25 -o ServerAliveInterval=10"
-          ssh_opts="$ssh_opts -o ServerAliveCountMax=3"
-
-          for attempt in 1 2 3; do
-            if rsync -rlptz --delete \
-                 --exclude '.dh-diag' \
-                 -e "ssh $ssh_opts" \
-                 dist/ "$SSH_USER@$SSH_HOST:$REMOTE_PATH"; then
-              echo "deployed on attempt $attempt"
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              delay=$((attempt * 30))
-              echo "attempt $attempt failed, retrying in ${delay}s" >&2
-              sleep "$delay"
-            fi
-          done
-
-          echo "ERROR: deploy failed after 3 attempts" >&2
-          exit 1
-
-      - name: Confirm the live site
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          sleep 5
-          # Verify the artifact that is actually being served, not the one we
-          # just built. These are not the same claim.
-          body=$(curl -fsS --max-time 30 https://plaintext.report/)
-          echo "$body" | grep -q '<main id="feeds">' \
-            || { echo "live page is missing the feeds container"; exit 1; }
-          count=$(printf '%s' "$body" | grep -c '</li>' || true)
-          echo "live page has $count headlines"
-          test "$count" -ge 15 || { echo "live page looks empty"; exit 1; }
