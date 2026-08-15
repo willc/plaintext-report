@@ -94,12 +94,35 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-          # .dh-diag is DreamHost's own symlink into /dh/web/diag; excluded so
-          # --delete does not sweep up something that is not ours.
-          rsync -rlptz --delete \
-            --exclude '.dh-diag' \
-            -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            dist/ "$SSH_USER@$SSH_HOST:$REMOTE_PATH"
+          # Shared hosting drops connections from runners often enough to be
+          # noise: about one run in eight timed out on SSH. The build is
+          # already verified by this point, so retrying costs nothing and a
+          # single flaky connection should not page anyone.
+          #
+          # ConnectTimeout keeps a dead attempt from burning two minutes
+          # before we can retry it. .dh-diag is DreamHost's own symlink into
+          # /dh/web/diag, excluded so --delete does not sweep it up.
+          ssh_opts="-i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts"
+          ssh_opts="$ssh_opts -o ConnectTimeout=25 -o ServerAliveInterval=10"
+          ssh_opts="$ssh_opts -o ServerAliveCountMax=3"
+
+          for attempt in 1 2 3; do
+            if rsync -rlptz --delete \
+                 --exclude '.dh-diag' \
+                 -e "ssh $ssh_opts" \
+                 dist/ "$SSH_USER@$SSH_HOST:$REMOTE_PATH"; then
+              echo "deployed on attempt $attempt"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 30))
+              echo "attempt $attempt failed, retrying in ${delay}s" >&2
+              sleep "$delay"
+            fi
+          done
+
+          echo "ERROR: deploy failed after 3 attempts" >&2
+          exit 1
 
       - name: Confirm the live site
         if: github.event_name != 'pull_request'
