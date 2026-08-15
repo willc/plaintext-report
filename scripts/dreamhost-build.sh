@@ -16,7 +16,15 @@ set -euo pipefail
 
 ROOT="${PLAINTEXT_ROOT:-$HOME/plaintext-report}"
 WEB="${PLAINTEXT_WEB:-$HOME/plaintext.report}"
-PY="$ROOT/.venv/bin/python"
+
+# DreamHost's Python has ensurepip stripped, so `venv` cannot bootstrap pip
+# and feedparser is a --user install against the system interpreter. A venv
+# is still preferred if one ever exists.
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+else
+  PY="${PLAINTEXT_PYTHON:-python3}"
+fi
 STAGE="$ROOT/.stage"
 LOG="$ROOT/build.log"
 LOCK="$ROOT/.build.lock"
