@@ -408,14 +408,17 @@ class TestRenderHtml:
         assert "stats.intergalacticstuff.com" not in out
 
     def test_no_inline_script_anywhere(self, sections):
-        """Only prefs.js and the Plausible pair; nothing else executes."""
+        """Two external scripts, prefs.js and Plausible. Nothing inline."""
         out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=True)
-        assert out.count("<script") == 3
-        assert out.count("<script>") == 1, "the Plausible init block is the only inline one"
+        assert out.count("<script") == 2
+        assert "<script>" not in out, "nothing inline may run"
 
     def test_analytics_block_is_last_and_self_hosted(self, sections):
         out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=True)
         assert pt.ANALYTICS_SRC in out
+        assert pt.ANALYTICS_SRC.endswith("/js/script.js"), \
+            "must be domain-keyed; a pa-<id>.js 404s after a restore"
+        assert f'data-domain="{pt.ANALYTICS_DOMAIN}"' in out
         assert "plausible.io" not in out, "must never use the public CDN"
         assert out.index(pt.ANALYTICS_SRC) > out.index("<footer>"), \
             "analytics must not block render"
@@ -875,11 +878,9 @@ class TestCss:
 # --------------------------------------------------------------------------
 
 class TestCsp:
-    def test_hash_matches_the_inline_script_that_ships(self, sections):
-        out = pt.render_html(sections, {"A": "u"}, 24, NOW, [], analytics=True)
-        start = out.index("<script>") + len("<script>")
-        shipped = out[start:out.index("</script>", start)]
-        assert pt.inline_script_hash(shipped) in pt.content_security_policy()
+    def test_policy_needs_no_hash(self):
+        """Domain-keyed analytics means no inline block, so no hash."""
+        assert "sha256-" not in pt.content_security_policy()
 
     def test_policy_has_no_unsafe_inline(self):
         assert "unsafe-inline" not in pt.content_security_policy()
@@ -893,8 +894,10 @@ class TestCsp:
         assert "script-src" not in policy
         assert "default-src 'none'" in policy
 
-    def test_htaccess_carries_the_hash(self):
-        assert pt.inline_script_hash() in csp_header(pt.render_htaccess(analytics=True))
+    def test_htaccess_allows_only_self_and_the_stats_host(self):
+        policy = csp_header(pt.render_htaccess(analytics=True))
+        assert "script-src 'self' https://stats.intergalacticstuff.com" in policy
+        assert "sha256-" not in policy
 
     def test_htaccess_sets_the_rest_of_the_headers(self):
         out = pt.render_htaccess()

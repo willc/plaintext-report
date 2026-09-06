@@ -152,16 +152,22 @@ def verify(root):
     c.check("unsafe-inline" not in htaccess, "CSP contains unsafe-inline")
     c.check("unsafe-eval" not in htaccess, "CSP contains unsafe-eval")
 
-    # The CSP hash has to match the inline script that actually shipped, or
-    # the browser silently refuses to run it.
-    inline = re.search(r"<script>(.*?)</script>", html, re.S)
-    if c.check(inline is not None, "no inline analytics block found"):
-        import base64
-        import hashlib
-        digest = hashlib.sha256(inline.group(1).encode()).digest()
-        expected = "'sha256-" + base64.b64encode(digest).decode() + "'"
-        c.check(expected in htaccess,
-                f"CSP script hash does not match the shipped inline script ({expected})")
+    # Nothing inline may run, so the policy needs no hash and must not have
+    # grown one back.
+    c.check(not re.search(r"<script>", html),
+            "index.html contains an inline script block")
+    c.check("sha256-" not in htaccess,
+            "CSP still carries a script hash; nothing inline should need one")
+
+    # The analytics tag has to be domain-keyed. A per-site pa-<id>.js is what
+    # broke before: those ids are not restored by a backup or reissued when a
+    # site is recreated, so the tag 404s and records nothing while the page
+    # still looks fine.
+    if "stats.intergalacticstuff.com" in html:
+        c.check("/js/script.js" in html,
+                "analytics must use the domain-keyed script, not a pa-<id>.js")
+        c.check('data-domain="plaintext.report"' in html,
+                "analytics tag is missing data-domain")
 
     security = c.read(".well-known/security.txt")
     c.check("Contact:" in security and "Expires:" in security,
