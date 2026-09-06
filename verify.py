@@ -25,6 +25,9 @@ PAGES = [
      "min_bytes": 2000, "min_sections": 1, "min_headlines": 10},
 ]
 
+# A real tag, as opposed to a bare "<" that is just a version range.
+MARKUP = re.compile(r"<[/!]?[a-zA-Z][^>]*>")
+
 REQUIRED = [
     "index.html",
     "index.txt",
@@ -114,9 +117,13 @@ def check_page(c, root, spec):
     except ET.ParseError as exc:
         c.check(False, f"{spec['rss']} is not well-formed: {exc}")
 
-    # Plain text must stay plain.
+    # Plain text must stay plain. A bare "<" is not evidence of that: CVE
+    # headlines routinely carry version ranges like "N-central < 2026.3", and
+    # rejecting those blocked every deploy for hours. Only a real tag means
+    # the renderer leaked markup.
     txt = c.read(f"{slug}.txt")
-    c.check("<" not in txt, f"{slug}.txt contains markup")
+    tags = MARKUP.findall(txt)
+    c.check(not tags, f"{slug}.txt contains markup: {tags[:3]}")
     c.check(len(txt) > 200, f"{slug}.txt is suspiciously short")
 
     return html

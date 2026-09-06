@@ -504,7 +504,33 @@ class TestRenderTxt:
         assert "https://ex.com/1" in out
 
     def test_contains_no_markup(self, sections):
-        assert "<" not in pt.render_txt(sections, 24, NOW)
+        import verify
+        assert not verify.MARKUP.search(pt.render_txt(sections, 24, NOW))
+
+    def test_version_ranges_survive(self):
+        """A CVE headline saying "N-central < 2026.3" is not markup. Treating
+        it as such blocked every deploy for four hours."""
+        import verify
+        s = pt.select(state_with("A", [item(
+            "Authentication bypass in N-central < 2026.3 HF 3 (CVE-2026-86207)",
+            "https://ex.com/a", 1)]), {"A": "u"}, 24, 15, NOW)
+        txt = pt.render_txt(s, 24, NOW)
+        assert "N-central < 2026.3" in txt
+        assert not verify.MARKUP.search(txt)
+
+    @pytest.mark.parametrize("leaked", [
+        "<b>bold</b>", "<a href='x'>y</a>", "<script>x</script>", "<!DOCTYPE html>",
+    ])
+    def test_real_tags_are_still_caught(self, leaked):
+        import verify
+        assert verify.MARKUP.search(leaked)
+
+    @pytest.mark.parametrize("safe", [
+        "version < 2.1", "a < b and b > c", "x <- y", "5 < 10", "foo <> bar",
+    ])
+    def test_bare_comparisons_are_not_markup(self, safe):
+        import verify
+        assert not verify.MARKUP.search(safe)
 
 
 class TestControls:
