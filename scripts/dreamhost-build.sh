@@ -41,6 +41,13 @@ out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 
 fail() {
+  # Log the failure as well as mailing it. build.log used to record only
+  # successes, so a run of green entries looked healthy while the site had
+  # not published for hours.
+  {
+    echo "=== $(date -u '+%Y-%m-%d %H:%M UTC')  FAILED at: $1 ==="
+    cat "$out"
+  } >> "$LOG"
   echo "PLAINTEXT REPORT build FAILED at $(date -u '+%Y-%m-%d %H:%M UTC')" >&2
   echo "--- $1 ---" >&2
   cat "$out" >&2
