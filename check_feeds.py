@@ -20,6 +20,7 @@ import time
 import feedparser
 
 from feeds import FEEDS, USER_AGENT
+from plaintext import ANALYTICS_SRC
 
 TIMEOUT = 20
 DELAY = 1.5  # seconds between requests; politeness, and Reddit insists
@@ -123,9 +124,32 @@ def main():
             flush=True,
         )
 
+    # The analytics script is an external URL the page hard-codes. A wrong or
+    # revoked site id 404s silently: the page still renders, nothing errors
+    # visibly, and no stats are ever recorded. Checked here rather than in
+    # verify.py so a Plausible outage can never block publishing.
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(ANALYTICS_SRC, method="HEAD",
+                                 headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            code = resp.status
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+    except Exception as exc:  # noqa: BLE001
+        code = f"error: {exc}"
+    verdict = "OK" if code == 200 else "FAIL"
+    print(f"\n{verdict:4}  analytics script  http={code}  {ANALYTICS_SRC}")
+    if verdict == "FAIL":
+        print("      No stats will be recorded. Re-copy the snippet from the "
+              "Plausible dashboard for this site.")
+
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    if verdict == "FAIL":
+        counts["FAIL"] = counts.get("FAIL", 0) + 1
     print(
         f"\n{len(rows)} feeds: "
         + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
